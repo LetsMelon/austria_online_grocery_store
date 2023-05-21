@@ -147,11 +147,15 @@ where
 #[derive(Debug)]
 pub struct BillaCrawl {}
 
-impl BillaCrawl {
-    async fn get_or_add_categories(pool: &PgPool) -> Result<Arc<HashMap<Category, Uuid>>> {
+impl ExecuteCrawler for BillaCrawl {
+    type Category = self::Category;
+
+    type Product = self::Product;
+
+    async fn get_or_add_categories(pool: &PgPool) -> Result<Arc<HashMap<Self::Category, Uuid>>> {
         let mut category_map = HashMap::new();
 
-        for category in Category::iter() {
+        for category in Self::Category::iter() {
             let category_string = format!("{:?}", category);
 
             let id: Result<Option<(Uuid,)>, sqlx::Error> =
@@ -180,12 +184,12 @@ impl BillaCrawl {
         Ok(Arc::new(category_map))
     }
 
-    pub async fn download_category(
+    async fn download_category(
         crawl_id: Uuid,
         client: Client,
         pool: &PgPool,
-        category: Category,
-    ) -> Result<Vec<(Product, Uuid)>> {
+        category: Self::Category,
+    ) -> Result<Vec<(Self::Product, Uuid)>> {
         let mut last_page = false;
 
         let mut billa_url = BillaUrl::new(category.clone(), 1);
@@ -244,11 +248,11 @@ impl BillaCrawl {
         Ok(products)
     }
 
-    pub async fn insert_products(
+    async fn insert_products(
         pool: &PgPool,
-        category_map: Arc<HashMap<Category, Uuid>>,
-        category: Category,
-        products: Vec<(Product, Uuid)>,
+        category_map: Arc<HashMap<Self::Category, Uuid>>,
+        category: Self::Category,
+        products: Vec<(Self::Product, Uuid)>,
     ) -> Result<()> {
         for (product, document_id) in products {
             // TODO get bpo_id as option
@@ -295,9 +299,7 @@ impl BillaCrawl {
 
         Ok(())
     }
-}
 
-impl ExecuteCrawler for BillaCrawl {
     async fn execute(pool: &PgPool, crawl_id: Uuid) -> Result<()> {
         let client = Client::new();
 

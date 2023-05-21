@@ -1,4 +1,5 @@
 #![feature(async_fn_in_trait)]
+#![feature(return_position_impl_trait_in_trait)]
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Uuid;
@@ -29,7 +30,6 @@ async fn main() {
         SparCrawl::execute(&pool, crawl_id.0),
         BillaCrawl::execute(&pool, crawl_id.0)
     );
-
     let _ = spar.unwrap();
     let _ = billa.unwrap();
 }

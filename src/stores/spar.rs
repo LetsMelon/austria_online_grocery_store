@@ -106,11 +106,14 @@ struct Page {
 #[derive(Debug)]
 pub struct SparCrawl {}
 
-impl SparCrawl {
-    pub async fn get_or_add_categories(pool: &PgPool) -> Result<Arc<HashMap<Category, Uuid>>> {
+impl ExecuteCrawler for SparCrawl {
+    type Category = self::Category;
+    type Product = self::Product;
+
+    async fn get_or_add_categories(pool: &PgPool) -> Result<Arc<HashMap<Self::Category, Uuid>>> {
         let mut category_map = HashMap::new();
 
-        for category in Category::iter() {
+        for category in Self::Category::iter() {
             let category_string = format!("{:?}", category);
 
             let id: Option<(Uuid,)> =
@@ -139,12 +142,12 @@ impl SparCrawl {
         Ok(Arc::new(category_map))
     }
 
-    pub async fn download_category(
+    async fn download_category(
         crawl_id: Uuid,
         client: Client,
         pool: &PgPool,
-        category: Category,
-    ) -> Result<Vec<(Product, Uuid)>> {
+        category: Self::Category,
+    ) -> Result<Vec<(Self::Product, Uuid)>> {
         let mut spar_url = SparUrl::new(category.clone(), 1);
 
         let mut products = Vec::new();
@@ -192,11 +195,11 @@ impl SparCrawl {
         Ok(products)
     }
 
-    pub async fn insert_products(
+    async fn insert_products(
         pool: &PgPool,
-        category_map: Arc<HashMap<Category, Uuid>>,
-        category: Category,
-        products: Vec<(Product, Uuid)>,
+        category_map: Arc<HashMap<Self::Category, Uuid>>,
+        category: Self::Category,
+        products: Vec<(Self::Product, Uuid)>,
     ) -> Result<()> {
         for (product, document_id) in products {
             let product_id: Option<(Uuid,)> =
@@ -235,18 +238,16 @@ impl SparCrawl {
 
         Ok(())
     }
-}
 
-impl ExecuteCrawler for SparCrawl {
     async fn execute(pool: &PgPool, crawl_id: Uuid) -> Result<()> {
         let client = Client::new();
 
-        let category_map = SparCrawl::get_or_add_categories(&pool).await?;
+        let category_map = Self::get_or_add_categories(&pool).await?;
 
         let semaphore = Arc::new(Semaphore::new(3));
         let mut set = JoinSet::new();
 
-        for category in Category::iter() {
+        for category in Self::Category::iter() {
             let semaphore = semaphore.clone();
             let client = client.clone();
             let pool = pool.clone();
@@ -255,14 +256,10 @@ impl ExecuteCrawler for SparCrawl {
             set.spawn(async move {
                 let permit = semaphore.acquire().await.unwrap();
 
-                println!("start: {:?}", category);
-
-                let products =
-                    SparCrawl::download_category(crawl_id, client, &pool, category).await;
+                let products = Self::download_category(crawl_id, client, &pool, category).await;
 
                 drop(permit);
 
-                println!("finish: {:?}", category);
                 (products, category)
             });
         }
@@ -296,8 +293,7 @@ impl ExecuteCrawler for SparCrawl {
             set.spawn(async move {
                 let permit = semaphore.acquire().await.unwrap();
 
-                let status =
-                    SparCrawl::insert_products(&pool, category_map, category, products).await;
+                let status = Self::insert_products(&pool, category_map, category, products).await;
 
                 drop(permit);
 
