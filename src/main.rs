@@ -2,6 +2,7 @@
 
 use sqlx::postgres::PgPoolOptions;
 use sqlx::types::Uuid;
+use stores::billa::BillaCrawl;
 use stores::spar::SparCrawl;
 
 use crate::stores::ExecuteCrawler;
@@ -24,5 +25,11 @@ async fn main() {
 
     println!("crawl id: {:?}", crawl_id.0);
 
-    SparCrawl::execute(&pool, crawl_id.0).await.unwrap();
+    let (spar, billa) = tokio::join!(
+        SparCrawl::execute(&pool, crawl_id.0),
+        BillaCrawl::execute(&pool, crawl_id.0)
+    );
+
+    let _ = spar.unwrap();
+    let _ = billa.unwrap();
 }
