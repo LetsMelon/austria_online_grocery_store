@@ -167,12 +167,12 @@ impl BillaCrawl {
 
                 let document_id: (Uuid,) = sqlx::query_as(
                 "insert into br_billa_raw (br_raw, br_url, br_bcw_crawl) values ( $1, $2, $3 ) RETURNING br_id",
-            )
-            .bind(text)
-            .bind(url)
-            .bind(crawl_id)
-            .fetch_one(pool)
-            .await?;
+                    )
+                    .bind(text)
+                    .bind(url)
+                    .bind(crawl_id)
+                    .fetch_one(pool)
+                    .await?;
 
                 let paging_info: PagingInfo = serde_json::from_value(body["pagingInfo"].clone())?;
 
