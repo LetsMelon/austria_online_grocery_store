@@ -5,11 +5,12 @@ use anyhow::Result;
 use reqwest::Client;
 use serde_json::Value;
 use sqlx::types::Uuid;
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, QueryBuilder};
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tokio::time::Instant;
 
 use super::ExecuteCrawler;
 
@@ -77,7 +78,7 @@ impl SparUrl {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, serde::Deserialize, Clone)]
 pub struct Product {
     description: String,
     #[serde(rename = "sales-unit")]
@@ -201,6 +202,8 @@ impl ExecuteCrawler for SparCrawl {
         category: Self::Category,
         products: Vec<(Self::Product, Uuid)>,
     ) -> Result<()> {
+        let mut products_with_id = Vec::with_capacity(products.len());
+
         for (product, document_id) in products {
             let product_id: Option<(Uuid,)> =
                 sqlx::query_as("select sp_id from sp_spar_product where sp_spar_id = $1")
@@ -213,10 +216,10 @@ impl ExecuteCrawler for SparCrawl {
                     let brand_name = product.brand.join(";");
 
                     let product_id: (Uuid,) = sqlx::query_as("insert into sp_spar_product (sp_spar_id, sp_description, sp_online_shop_url, sp_name, sp_brand, sp_sc_category) values ( $1, $2, $3, $4, $5, $6 ) returning sp_id")
-                        .bind(product.id_internal)
-                        .bind(product.description)
-                        .bind(product.url)
-                        .bind(product.name)
+                        .bind(&product.id_internal)
+                        .bind(&product.description)
+                        .bind(&product.url)
+                        .bind(&product.name)
                         .bind(brand_name)
                         .bind(category_map.get(&category).unwrap().clone())
                         .fetch_one(pool)
@@ -226,15 +229,24 @@ impl ExecuteCrawler for SparCrawl {
                 }
             };
 
-            sqlx::query("insert into spr_spar_price (spr_price, spr_sales_unit, spr_price_unit, spr_sp_product, spr_sr_raw) values ( $1, $2, $3, $4, $5 )")
-                .bind(product.price)
-                .bind(product.sales_unit)
-                .bind(product.price_per_unit)
-                .bind(product_id)
-                .bind(document_id)
-                .execute(pool)
-                .await?;
+            products_with_id.push((product, document_id, product_id));
         }
+
+        let mut query_builder: QueryBuilder<Postgres> = QueryBuilder::new("insert into spr_spar_price (spr_price, spr_sales_unit, spr_price_unit, spr_sp_product, spr_sr_raw)");
+
+        query_builder.push_values(
+            products_with_id.iter().take(16),
+            |mut b, (product, document_id, product_id)| {
+                b.push_bind(&product.price);
+                b.push_bind(&product.sales_unit);
+                b.push_bind(&product.price_per_unit);
+                b.push_bind(product_id);
+                b.push_bind(document_id);
+            },
+        );
+
+        let query = query_builder.build();
+        query.execute(pool).await?;
 
         Ok(())
     }
@@ -256,9 +268,13 @@ impl ExecuteCrawler for SparCrawl {
             set.spawn(async move {
                 let permit = semaphore.acquire().await.unwrap();
 
+                println!("start with: {:?}", category);
+
                 let products = Self::download_category(crawl_id, client, &pool, category).await;
 
                 drop(permit);
+
+                println!("finish with: {:?}", category);
 
                 (products, category)
             });
@@ -285,6 +301,8 @@ impl ExecuteCrawler for SparCrawl {
         let semaphore = Arc::new(Semaphore::new(20));
         let mut set = JoinSet::new();
 
+        let now = Instant::now();
+
         for (category, products) in products_lists {
             let semaphore = semaphore.clone();
             let pool = pool.clone();
@@ -304,6 +322,9 @@ impl ExecuteCrawler for SparCrawl {
         while let Some(res) = set.join_next().await {
             let _ = res;
         }
+
+        let duration = now.elapsed();
+        println!("took: {:?} ms", duration.as_millis());
 
         Ok(())
     }
