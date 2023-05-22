@@ -9,6 +9,7 @@ use stores::spar::SparCrawl;
 use crate::stores::ExecuteCrawler;
 
 mod stores;
+mod utils;
 
 #[tokio::main]
 async fn main() {
@@ -32,4 +33,6 @@ async fn main() {
     );
     let _ = spar.unwrap();
     let _ = billa.unwrap();
+
+    // SparCrawl::execute(&pool, crawl_id.0).await.unwrap();
 }

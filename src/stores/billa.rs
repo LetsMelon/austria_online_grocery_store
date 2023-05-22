@@ -14,6 +14,7 @@ use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
 use super::ExecuteCrawler;
+use crate::utils::random_user_agent;
 
 #[derive(Debug, Clone, Copy, EnumIter, PartialEq, Eq, Hash)]
 pub enum Category {
@@ -149,7 +150,6 @@ pub struct BillaCrawl {}
 
 impl ExecuteCrawler for BillaCrawl {
     type Category = self::Category;
-
     type Product = self::Product;
 
     async fn get_or_add_categories(pool: &PgPool) -> Result<Arc<HashMap<Self::Category, Uuid>>> {
@@ -301,7 +301,10 @@ impl ExecuteCrawler for BillaCrawl {
     }
 
     async fn execute(pool: &PgPool, crawl_id: Uuid) -> Result<()> {
-        let client = Client::new();
+        let client = Client::builder()
+            .user_agent(random_user_agent())
+            .gzip(true)
+            .build()?;
 
         let category_map = BillaCrawl::get_or_add_categories(&pool).await?;
 
