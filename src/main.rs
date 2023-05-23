@@ -16,12 +16,20 @@ mod utils;
 
 #[tokio::main]
 async fn main() {
+    let tracer = opentelemetry_otlp::new_pipeline()
+        .tracing()
+        .with_exporter(opentelemetry_otlp::new_exporter().tonic())
+        .install_batch(opentelemetry::runtime::Tokio)
+        .unwrap();
+    let telemetry_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+
     tracing_subscriber::registry()
-        .with(fmt::layer().with_ansi(false))
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| "austria_online_grocery_store=debug".into()),
         )
+        .with(fmt::layer())
+        .with(telemetry_layer)
         .init();
 
     let pool = PgPoolOptions::new()
@@ -45,4 +53,6 @@ async fn main() {
     );
     let _ = spar.unwrap();
     let _ = billa.unwrap();
+
+    // SparCrawl::execute(&pool, crawl_id.0).await.unwrap();
 }
