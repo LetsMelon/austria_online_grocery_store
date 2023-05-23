@@ -12,6 +12,7 @@ use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+use tracing::{debug, info};
 
 use super::ExecuteCrawler;
 use crate::utils::random_user_agent;
@@ -152,8 +153,11 @@ impl ExecuteCrawler for BillaCrawl {
     type Category = self::Category;
     type Product = self::Product;
 
+    #[tracing::instrument(skip(pool))]
     async fn get_or_add_categories(pool: &PgPool) -> Result<Arc<HashMap<Self::Category, Uuid>>> {
         let mut category_map = HashMap::new();
+
+        debug!("categories: {}", Self::Category::iter().count());
 
         for category in Self::Category::iter() {
             let category_string = format!("{:?}", category);
@@ -178,12 +182,15 @@ impl ExecuteCrawler for BillaCrawl {
                 }
             };
 
+            debug!("category: {:?}, id: {:?}", category, id);
+
             category_map.insert(category, id);
         }
 
         Ok(Arc::new(category_map))
     }
 
+    #[tracing::instrument(skip(crawl_id, client, pool))]
     async fn download_category(
         crawl_id: Uuid,
         client: Client,
@@ -197,10 +204,11 @@ impl ExecuteCrawler for BillaCrawl {
         let mut products = Vec::new();
 
         while !last_page {
-            println!("{:?}: {}", category, billa_url.page());
-
             let url = billa_url.as_url();
+            debug!("url: {:?}", url);
+
             let res = client.get(&url).send().await?;
+            debug!("status: {:?}", res.status());
 
             if res.status() == 200 {
                 let text = res.text().await?;
@@ -248,12 +256,17 @@ impl ExecuteCrawler for BillaCrawl {
         Ok(products)
     }
 
+    #[tracing::instrument(skip(pool, category_map, products), fields(product_count = products.len()))]
     async fn insert_products(
         pool: &PgPool,
         category_map: Arc<HashMap<Self::Category, Uuid>>,
         category: Self::Category,
         products: Vec<(Self::Product, Uuid)>,
     ) -> Result<()> {
+        // TODO use batch inserts like in `SparCrawler::insert_products`
+
+        debug!("Get product id's and insert the price");
+
         for (product, document_id) in products {
             // TODO get bpo_id as option
             let count: (i64,) =
@@ -297,19 +310,26 @@ impl ExecuteCrawler for BillaCrawl {
                 .execute(pool).await?;
         }
 
+        debug!("Finish with inserting all products and prices");
+
         Ok(())
     }
 
+    #[tracing::instrument(skip(pool))]
     async fn execute(pool: &PgPool, crawl_id: Uuid) -> Result<()> {
         let client = Client::builder()
             .user_agent(random_user_agent())
             .gzip(true)
             .build()?;
 
+        info!("Created http client");
+
         let category_map = BillaCrawl::get_or_add_categories(&pool).await?;
 
         let semaphore = Arc::new(Semaphore::new(3));
         let mut set = JoinSet::new();
+
+        info!("Start with crawling api");
 
         for category in Category::iter() {
             let semaphore = semaphore.clone();
@@ -320,10 +340,14 @@ impl ExecuteCrawler for BillaCrawl {
             set.spawn(async move {
                 let permit = semaphore.acquire().await.unwrap();
 
+                debug!("start with: {:?}", category);
+
                 let products =
                     BillaCrawl::download_category(crawl_id, client, &pool, category).await;
 
                 drop(permit);
+
+                debug!("finish with: {:?}", category);
 
                 (products, category)
             });
@@ -340,7 +364,14 @@ impl ExecuteCrawler for BillaCrawl {
             }
         }
 
-        println!("start product inserts");
+        info!(
+            "crawled products: {}",
+            products_lists
+                .iter()
+                .map(|(_, item)| item.len())
+                .sum::<usize>()
+        );
+        info!("Start with inserting into db");
 
         let semaphore = Arc::new(Semaphore::new(20));
         let mut set = JoinSet::new();

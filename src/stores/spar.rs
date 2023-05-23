@@ -11,6 +11,7 @@ use strum_macros::EnumIter;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
+use tracing::{debug, info};
 
 use super::ExecuteCrawler;
 use crate::utils::random_user_agent;
@@ -112,8 +113,11 @@ impl ExecuteCrawler for SparCrawl {
     type Category = self::Category;
     type Product = self::Product;
 
+    #[tracing::instrument(skip(pool))]
     async fn get_or_add_categories(pool: &PgPool) -> Result<Arc<HashMap<Self::Category, Uuid>>> {
         let mut category_map = HashMap::new();
+
+        debug!("categories: {}", Self::Category::iter().count());
 
         for category in Self::Category::iter() {
             let category_string = format!("{:?}", category);
@@ -138,12 +142,15 @@ impl ExecuteCrawler for SparCrawl {
                 }
             };
 
+            debug!("category: {:?}, id: {:?}", category, id);
+
             category_map.insert(category, id);
         }
 
         Ok(Arc::new(category_map))
     }
 
+    #[tracing::instrument(skip(crawl_id, client, pool))]
     async fn download_category(
         crawl_id: Uuid,
         client: Client,
@@ -156,7 +163,10 @@ impl ExecuteCrawler for SparCrawl {
 
         loop {
             let url = spar_url.as_url();
+            debug!("url: {:?}", url);
+
             let res = client.get(&url).send().await?;
+            debug!("status: {:?}", res.status());
 
             if res.status() == 200 {
                 let text = res.text().await?;
@@ -197,6 +207,7 @@ impl ExecuteCrawler for SparCrawl {
         Ok(products)
     }
 
+    #[tracing::instrument(skip(pool, category_map, products), fields(product_count = products.len()))]
     async fn insert_products(
         pool: &PgPool,
         category_map: Arc<HashMap<Self::Category, Uuid>>,
@@ -204,6 +215,8 @@ impl ExecuteCrawler for SparCrawl {
         products: Vec<(Self::Product, Uuid)>,
     ) -> Result<()> {
         let mut products_with_id = Vec::with_capacity(products.len());
+
+        debug!("Get product id's");
 
         for (product, document_id) in products {
             let product_id: Option<(Uuid,)> =
@@ -233,6 +246,9 @@ impl ExecuteCrawler for SparCrawl {
             products_with_id.push((product, document_id, product_id));
         }
 
+        debug!("Have all product id's");
+        debug!("Start with inserting prices");
+
         let mut query_builder: QueryBuilder<Postgres> = QueryBuilder::new("insert into spr_spar_price (spr_price, spr_sales_unit, spr_price_unit, spr_sp_product, spr_sr_raw)");
 
         query_builder.push_values(
@@ -249,19 +265,26 @@ impl ExecuteCrawler for SparCrawl {
         let query = query_builder.build();
         query.execute(pool).await?;
 
+        debug!("Finish with inserting all prices");
+
         Ok(())
     }
 
+    #[tracing::instrument(skip(pool))]
     async fn execute(pool: &PgPool, crawl_id: Uuid) -> Result<()> {
         let client = Client::builder()
             .user_agent(random_user_agent())
             .gzip(true)
             .build()?;
 
+        info!("Created http client");
+
         let category_map = Self::get_or_add_categories(&pool).await?;
 
         let semaphore = Arc::new(Semaphore::new(3));
         let mut set = JoinSet::new();
+
+        info!("Start with crawling api");
 
         for category in Self::Category::iter() {
             let semaphore = semaphore.clone();
@@ -272,13 +295,13 @@ impl ExecuteCrawler for SparCrawl {
             set.spawn(async move {
                 let permit = semaphore.acquire().await.unwrap();
 
-                println!("start with: {:?}", category);
+                debug!("start with: {:?}", category);
 
                 let products = Self::download_category(crawl_id, client, &pool, category).await;
 
                 drop(permit);
 
-                println!("finish with: {:?}", category);
+                debug!("finish with: {:?}", category);
 
                 (products, category)
             });
@@ -293,19 +316,17 @@ impl ExecuteCrawler for SparCrawl {
             }
         }
 
-        println!(
-            "products: {}",
+        info!(
+            "crawled products: {}",
             products_lists
                 .iter()
                 .map(|(_, item)| item.len())
                 .sum::<usize>()
         );
-        println!("Start with inserting into db");
+        info!("Start with inserting into db");
 
         let semaphore = Arc::new(Semaphore::new(20));
         let mut set = JoinSet::new();
-
-        let now = Instant::now();
 
         for (category, products) in products_lists {
             let semaphore = semaphore.clone();
@@ -326,9 +347,6 @@ impl ExecuteCrawler for SparCrawl {
         while let Some(res) = set.join_next().await {
             let _ = res;
         }
-
-        let duration = now.elapsed();
-        println!("took: {:?} ms", duration.as_millis());
 
         Ok(())
     }
