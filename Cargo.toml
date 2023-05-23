@@ -21,3 +21,5 @@ anyhow = "1.0.71"
 strum_macros = "0.24"
 strum = { version = "0.24", features = ["derive"] }
 rand = "0.8.5"
+tracing = { version = "0.1.37", features = ["log"] }
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
